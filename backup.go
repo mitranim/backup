@@ -63,17 +63,19 @@ type Entry struct {
 type CommonConfig struct {
 	Debounce gg.Opt[Millisec] `json:"debounce"`
 	Deadline gg.Opt[Millisec] `json:"deadline"`
+	Throttle gg.Opt[Second]   `json:"throttle"`
 	Limit    gg.Opt[uint64]   `json:"limit"`
 }
 
-type RunInput struct {
-	Config  Config
-	Entry   Entry
-	Initial bool
+type RunState struct {
+	Config Config
+	Entry  Entry
+	Latest time.Time
 }
 
 const DEFAULT_DEBOUNCE Millisec = 1000
 const DEFAULT_DEADLINE Millisec = 1000 * 10
+const DEFAULT_THROTTLE Second = 60 * 10
 const DEFAULT_LIMIT = 128
 
 func main() {
@@ -216,13 +218,14 @@ func runEntry(ctx context.Context, conf Config, entry Entry) {
 		log.Printf(`watching %q`, entry.Input)
 	}
 
-	var run RunInput
-	run.Initial = true
+	var run RunState
 	run.Config = conf
 	run.Entry = entry
 
-	backup(run)
-	run.Initial = false
+	backup(&run)
+	debounce := run.GetDebounce().Duration()
+	deadline := run.GetDeadline().Duration()
+	throttle := run.GetThrottle().Duration()
 
 outer:
 	for {
@@ -231,18 +234,27 @@ outer:
 			return
 
 		case eve := <-events:
-			if FLAGS.Verbose {
-				log.Println(`FS event detected:`, eve)
+			latest := run.Latest
+			if throttle > 0 && !latest.IsZero() {
+				elapsed := time.Since(latest)
+				if elapsed < throttle {
+					if FLAGS.Verbose {
+						log.Printf(`ignoring FS event, elapsed time %v < throttle time %v`, elapsed, throttle)
+					}
+					continue outer
+				}
 			}
 
-			debounce := run.GetDebounce().Duration()
+			if FLAGS.Verbose {
+				log.Println(`FS event:`, eve)
+			}
+
 			if debounce == 0 {
-				backup(run)
+				backup(&run)
 				continue outer
 			}
 
 			var dead <-chan time.Time
-			deadline := run.GetDeadline().Duration()
 			if deadline != 0 {
 				dead = time.After(deadline)
 			}
@@ -253,13 +265,13 @@ outer:
 					return
 				case eve := <-events:
 					if FLAGS.Verbose {
-						log.Println(`FS event detected:`, eve)
+						log.Println(`FS event:`, eve)
 					}
 				case <-time.After(debounce):
-					backup(run)
+					backup(&run)
 					continue outer
 				case <-dead:
-					backup(run)
+					backup(&run)
 					continue outer
 				}
 			}
@@ -267,23 +279,24 @@ outer:
 	}
 }
 
-func backup(run RunInput) {
+func backup(run *RunState) {
 	defer gg.RecWith(logErr)
 	defer gg.Detailf(`failed to backup %q`, run.Entry.Input)
 
 	inp := gg.ParseTo[IndexedName](run.Entry.Input)
 	outs := gg.Sorted(relatedNames(run.Entry.Output, inp))
 	prev := gg.Last(outs)
-	defer gg.Ok(func() { cleanup(run, outs) })
 
-	if run.Initial && gg.IsNotZero(prev) {
+	defer gg.Ok(func() { finalize(run, outs) })
+
+	if run.Initial() && gg.IsNotZero(prev) {
 		name := prev.String()
 		path := filepath.Join(run.Entry.Output, name)
 		nextTime := maxModTime(run.Entry.Input)
 		prevTime := maxModTime(path)
 		if prevTime.After(nextTime) {
 			if FLAGS.Verbose {
-				fmt.Fprintf(os.Stderr, "backup %q is already up to date\n", path)
+				log.Printf(`backup %q is already up to date`, path)
 			}
 			return
 		}
@@ -295,15 +308,17 @@ func backup(run RunInput) {
 	path := filepath.Join(run.Entry.Output, next.String())
 	copyRecursive(run.Entry.Input, path, run.Entry.Output)
 
-	// For `cleanup`.
+	// For `finalize`.
 	outs = append(outs, next)
 
 	if FLAGS.Verbose {
-		fmt.Fprintf(os.Stderr, "backed up %q\n", path)
+		log.Printf(`backed up %q`, path)
 	}
 }
 
-func cleanup(run RunInput, outs []IndexedName) {
+func finalize(run *RunState, outs []IndexedName) {
+	run.Latest = time.Now()
+
 	limit := gg.NumConv[int](run.GetLimit())
 	if limit <= 0 {
 		return
@@ -336,15 +351,27 @@ func (self Millisec) Duration() time.Duration {
 	return gg.Mul(gg.NumConv[time.Duration](self), time.Millisecond)
 }
 
-func (self *RunInput) GetDebounce() Millisec {
+type Second uint64
+
+func (self Second) Duration() time.Duration {
+	return gg.Mul(gg.NumConv[time.Duration](self), time.Second)
+}
+
+func (self RunState) Initial() bool { return self.Latest.IsZero() }
+
+func (self RunState) GetDebounce() Millisec {
 	return optGet(optCoalesce(self.Entry.Debounce, self.Config.Debounce), DEFAULT_DEBOUNCE)
 }
 
-func (self *RunInput) GetDeadline() Millisec {
+func (self RunState) GetDeadline() Millisec {
 	return optGet(optCoalesce(self.Entry.Deadline, self.Config.Deadline), DEFAULT_DEADLINE)
 }
 
-func (self *RunInput) GetLimit() uint64 {
+func (self RunState) GetThrottle() Second {
+	return optGet(optCoalesce(self.Entry.Throttle, self.Config.Throttle), DEFAULT_THROTTLE)
+}
+
+func (self RunState) GetLimit() uint64 {
 	return optGet(optCoalesce(self.Entry.Limit, self.Config.Limit), DEFAULT_LIMIT)
 }
 
