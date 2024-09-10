@@ -61,9 +61,9 @@ type Entry struct {
 }
 
 type CommonConfig struct {
-	Debounce gg.Opt[Millisec] `json:"debounce"`
-	Deadline gg.Opt[Millisec] `json:"deadline"`
-	Throttle gg.Opt[Second]   `json:"throttle"`
+	Debounce gg.Opt[Duration] `json:"debounce"`
+	Deadline gg.Opt[Duration] `json:"deadline"`
+	Throttle gg.Opt[Duration] `json:"throttle"`
 	Limit    gg.Opt[uint64]   `json:"limit"`
 }
 
@@ -73,9 +73,9 @@ type RunState struct {
 	Latest time.Time
 }
 
-const DEFAULT_DEBOUNCE Millisec = 1000
-const DEFAULT_DEADLINE Millisec = 1000 * 10
-const DEFAULT_THROTTLE Second = 60 * 10
+const DEFAULT_DEBOUNCE = Duration(time.Second)
+const DEFAULT_DEADLINE = Duration(time.Second * 10)
+const DEFAULT_THROTTLE = Duration(time.Minute * 10)
 const DEFAULT_LIMIT = 128
 
 func main() {
@@ -187,13 +187,13 @@ func watchConfig(path string, events chan notify.EventInfo) {
 	}
 
 	if FLAGS.Verbose {
-		log.Printf(`watching config file %q`, path)
+		log.Printf(`watching config file %v`, fmtPath(path))
 	}
 }
 
 func readConfig() (out Config) {
 	path := FLAGS.Config
-	defer gg.Detailf(`unable to decode config file %q`, path)
+	defer gg.Detailf(`unable to decode config file %v`, fmtPath(path))
 	gg.JsonDecodeFile(path, &out)
 	return
 }
@@ -215,7 +215,7 @@ func runEntry(ctx context.Context, conf Config, entry Entry) {
 	defer notify.Stop(events)
 
 	if FLAGS.Verbose {
-		log.Printf(`watching %q`, entry.Input)
+		log.Printf(`watching %v`, fmtPath(entry.Input))
 	}
 
 	var run RunState
@@ -239,15 +239,13 @@ outer:
 				elapsed := time.Since(latest)
 				if elapsed < throttle {
 					if FLAGS.Verbose {
-						log.Printf(`ignoring FS event, elapsed time %v < throttle time %v`, elapsed, throttle)
+						log.Printf(`ignoring FS event: elapsed time %v < throttle time %v`, elapsed, throttle)
 					}
 					continue outer
 				}
 			}
 
-			if FLAGS.Verbose {
-				log.Println(`FS event:`, eve)
-			}
+			logEvent(eve)
 
 			if debounce == 0 {
 				backup(&run)
@@ -264,9 +262,7 @@ outer:
 				case <-ctx.Done():
 					return
 				case eve := <-events:
-					if FLAGS.Verbose {
-						log.Println(`FS event:`, eve)
-					}
+					logEvent(eve)
 				case <-time.After(debounce):
 					backup(&run)
 					continue outer
@@ -281,7 +277,7 @@ outer:
 
 func backup(run *RunState) {
 	defer gg.RecWith(logErr)
-	defer gg.Detailf(`failed to backup %q`, run.Entry.Input)
+	defer gg.Detailf(`failed to backup %v`, fmtPath(run.Entry.Input))
 
 	inp := gg.ParseTo[IndexedName](run.Entry.Input)
 	outs := gg.Sorted(relatedNames(run.Entry.Output, inp))
@@ -296,7 +292,7 @@ func backup(run *RunState) {
 		prevTime := maxModTime(path)
 		if prevTime.After(nextTime) {
 			if FLAGS.Verbose {
-				log.Printf(`backup %q is already up to date`, path)
+				log.Printf(`backup %v is already up to date`, fmtPath(path))
 			}
 			return
 		}
@@ -312,7 +308,7 @@ func backup(run *RunState) {
 	outs = append(outs, next)
 
 	if FLAGS.Verbose {
-		log.Printf(`backed up %q`, path)
+		log.Printf(`backed up %v`, fmtPath(path))
 	}
 }
 
@@ -329,7 +325,7 @@ func finalize(run *RunState, outs []IndexedName) {
 		_ = os.RemoveAll(path)
 
 		if FLAGS.Verbose {
-			log.Printf(`deleted %q`, path)
+			log.Printf(`deleted %v`, fmtPath(path))
 		}
 	}
 }
@@ -345,29 +341,32 @@ func logErr(err error) {
 	}
 }
 
-type Millisec uint64
+// Workaround for the lack of a text decoding method in `time.Duration`.
+type Duration time.Duration
 
-func (self Millisec) Duration() time.Duration {
-	return gg.Mul(gg.NumConv[time.Duration](self), time.Millisecond)
-}
+func (self Duration) Duration() time.Duration { return time.Duration(self) }
 
-type Second uint64
+func (self Duration) String() string { return self.Duration().String() }
 
-func (self Second) Duration() time.Duration {
-	return gg.Mul(gg.NumConv[time.Duration](self), time.Second)
+func (self *Duration) UnmarshalText(src []byte) error {
+	val, err := time.ParseDuration(gg.ToString(src))
+	if err == nil {
+		*self = Duration(val)
+	}
+	return err
 }
 
 func (self RunState) Initial() bool { return self.Latest.IsZero() }
 
-func (self RunState) GetDebounce() Millisec {
+func (self RunState) GetDebounce() Duration {
 	return optGet(optCoalesce(self.Entry.Debounce, self.Config.Debounce), DEFAULT_DEBOUNCE)
 }
 
-func (self RunState) GetDeadline() Millisec {
+func (self RunState) GetDeadline() Duration {
 	return optGet(optCoalesce(self.Entry.Deadline, self.Config.Deadline), DEFAULT_DEADLINE)
 }
 
-func (self RunState) GetThrottle() Second {
+func (self RunState) GetThrottle() Duration {
 	return optGet(optCoalesce(self.Entry.Throttle, self.Config.Throttle), DEFAULT_THROTTLE)
 }
 
@@ -561,4 +560,17 @@ func copyFile(srcPath, tarPath string) {
 	defer gg.Close(out) // Do not ignore error.
 
 	gg.Try1(io.Copy(out, src))
+}
+
+func logEvent(src notify.EventInfo) {
+	if src != nil && FLAGS.Verbose {
+		log.Println(`FS event:`, fmtEvent(src))
+	}
+}
+
+func fmtEvent(src notify.EventInfo) (_ string) {
+	if src == nil {
+		return
+	}
+	return src.Event().String() + `: ` + fmtPath(src.Path())
 }
