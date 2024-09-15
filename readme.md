@@ -55,9 +55,22 @@ Example config. Note that file paths may be either absolute or relative to the d
 }
 ```
 
+Example config with Windows paths:
+
+```json
+{
+  "entries": [
+    {
+      "input": "C:\\Users\\some_user\\Documents\\some_file_or_directory",
+      "output": "C:\\Users\\some_user\\Downloads\\some_backups"
+    }
+  ]
+}
+```
+
 ## Limitations
 
-At the time of writing, watching the config file doesn't seem to work on Windows. Related issue: https://github.com/rjeczalik/notify/issues/225.
+At the time of writing, watching the config file itself doesn't seem to work on Windows. This may also be the case for watching other individual files. Watching directories seems to work. Related issue: https://github.com/rjeczalik/notify/issues/225.
 
 ## License
 
