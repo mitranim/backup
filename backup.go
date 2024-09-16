@@ -1,25 +1,3 @@
-/*
-CLI tool for periodically backing up files. Intended mainly for backing up
-save files for games where the developers think it's a good idea to randomly
-lose your progress.
-
-Requires Go. Use any of the following, depending on your preference:
-
-	* Official download: https://go.dev/dl/.
-	* MacOS: `brew install go`.
-	* Linux: use your system's package manager.
-	* Windows: `scoop install golang` (if you use Scoop).
-	* Windows: `choco install golang` (if you use Chocolatey).
-
-Before running, specify the source and destination path
-by editing the constants `SRC_DIR` and `TAR_DIR` below.
-
-To run, open a terminal, navigate to this directory, then:
-
-	go run .
-
-The makefile in the source directory is for development only.
-*/
 package main
 
 import (
