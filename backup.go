@@ -165,13 +165,13 @@ func watchConfig(path string, events chan notify.EventInfo) {
 	}
 
 	if FLAGS.Verbose {
-		log.Printf(`watching config file %v`, fmtPath(path))
+		log.Printf(`watching config file: %v`, fmtPath(path))
 	}
 }
 
 func readConfig() (out Config) {
 	path := FLAGS.Config
-	defer gg.Detailf(`unable to decode config file %v`, fmtPath(path))
+	defer gg.Detailf(`unable to decode config file: %v`, fmtPath(path))
 	gg.JsonDecodeFile(path, &out)
 	return
 }
@@ -193,7 +193,7 @@ func runEntry(ctx context.Context, conf Config, entry Entry) {
 	defer notify.Stop(events)
 
 	if FLAGS.Verbose {
-		log.Printf(`watching %v`, fmtPath(entry.Input))
+		log.Printf(`watching: %v`, fmtPath(entry.Input))
 	}
 
 	var run RunState
@@ -225,13 +225,13 @@ outer:
 
 			logEvent(eve)
 
-			if debounce == 0 {
+			if debounce <= 0 {
 				backup(&run)
 				continue outer
 			}
 
 			var dead <-chan time.Time
-			if deadline != 0 {
+			if deadline > 0 {
 				dead = time.After(deadline)
 			}
 
@@ -270,7 +270,7 @@ func backup(run *RunState) {
 		prevTime := maxModTime(path)
 		if prevTime.After(nextTime) {
 			if FLAGS.Verbose {
-				log.Printf(`backup %v is already up to date`, fmtPath(path))
+				log.Printf(`already up to date: %v`, fmtPath(path))
 			}
 			return
 		}
@@ -286,7 +286,7 @@ func backup(run *RunState) {
 	outs = append(outs, next)
 
 	if FLAGS.Verbose {
-		log.Printf(`backed up %v`, fmtPath(path))
+		log.Printf(`backed up: %v`, fmtPath(path))
 	}
 }
 
@@ -303,7 +303,7 @@ func finalize(run *RunState, outs []IndexedName) {
 		_ = os.RemoveAll(path)
 
 		if FLAGS.Verbose {
-			log.Printf(`deleted %v`, fmtPath(path))
+			log.Printf(`deleted: %v`, fmtPath(path))
 		}
 	}
 }
@@ -415,7 +415,7 @@ func (self Index) Width() (out int) {
 	if self == 0 {
 		return 1
 	}
-	for self > 0 {
+	for self != 0 {
 		out++
 		self /= INDEX_RADIX
 	}
