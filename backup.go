@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
+	l "log"
 	"math"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mitranim/gg"
@@ -22,9 +23,9 @@ import (
 var FLAGS = Flags{Config: `backup.json`}
 
 type Flags struct {
-	Config  string `json:"config"`
-	Help    bool   `json:"help"`
-	Verbose bool   `json:"verbose"`
+	Config  string
+	Help    bool
+	Verbose bool
 }
 
 type Config struct {
@@ -55,6 +56,8 @@ const DEFAULT_DEBOUNCE = Duration(time.Second)
 const DEFAULT_DEADLINE = Duration(time.Second * 10)
 const DEFAULT_THROTTLE = Duration(time.Minute * 10)
 const DEFAULT_LIMIT = 128
+
+var log = l.New(os.Stderr, `[backup] `, 0)
 
 func main() {
 	log.SetOutput(os.Stderr)
@@ -101,16 +104,23 @@ func main() {
 	defer notify.Stop(events)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go run(ctx)
+	gro := new(sync.WaitGroup)
+	go run(ctx, gro)
 
 	for range events {
 		if FLAGS.Verbose {
-			log.Println(`restarting on config change`)
+			log.Println(`config change: stopping`)
 		}
 
 		cancel()
 		ctx, cancel = context.WithCancel(context.Background())
-		go run(ctx)
+		gro.Wait()
+		gro = new(sync.WaitGroup)
+
+		if FLAGS.Verbose {
+			log.Println(`config change: restarting`)
+		}
+		go run(ctx, gro)
 	}
 }
 
@@ -176,16 +186,18 @@ func readConfig() (out Config) {
 	return
 }
 
-func run(ctx context.Context) {
+func run(ctx context.Context, gro *sync.WaitGroup) {
 	defer gg.RecWith(logErr)
 	conf := readConfig()
 
 	for _, entry := range conf.Entries {
-		go runEntry(ctx, conf, entry)
+		gro.Add(1)
+		go runEntry(ctx, conf, entry, gro)
 	}
 }
 
-func runEntry(ctx context.Context, conf Config, entry Entry) {
+func runEntry(ctx context.Context, conf Config, entry Entry, gro *sync.WaitGroup) {
+	defer gro.Done()
 	defer gg.RecWith(logErr)
 
 	events := make(chan notify.EventInfo, 2)
@@ -196,14 +208,14 @@ func runEntry(ctx context.Context, conf Config, entry Entry) {
 		log.Printf(`watching: %v`, fmtPath(entry.Input))
 	}
 
-	var run RunState
-	run.Config = conf
-	run.Entry = entry
+	var state RunState
+	state.Config = conf
+	state.Entry = entry
 
-	backup(&run)
-	debounce := run.GetDebounce().Duration()
-	deadline := run.GetDeadline().Duration()
-	throttle := run.GetThrottle().Duration()
+	backup(&state)
+	debounce := state.GetDebounce().Duration()
+	deadline := state.GetDeadline().Duration()
+	throttle := state.GetThrottle().Duration()
 
 outer:
 	for {
@@ -212,7 +224,7 @@ outer:
 			return
 
 		case eve := <-events:
-			latest := run.Latest
+			latest := state.Latest
 			if throttle > 0 && !latest.IsZero() {
 				elapsed := time.Since(latest)
 				if elapsed < throttle {
@@ -226,7 +238,7 @@ outer:
 			logEvent(eve)
 
 			if debounce <= 0 {
-				backup(&run)
+				backup(&state)
 				continue outer
 			}
 
@@ -242,10 +254,10 @@ outer:
 				case eve := <-events:
 					logEvent(eve)
 				case <-time.After(debounce):
-					backup(&run)
+					backup(&state)
 					continue outer
 				case <-dead:
-					backup(&run)
+					backup(&state)
 					continue outer
 				}
 			}
@@ -253,24 +265,24 @@ outer:
 	}
 }
 
-func backup(run *RunState) {
+func backup(state *RunState) {
 	defer gg.RecWith(logErr)
-	defer gg.Detailf(`failed to backup %v`, fmtPath(run.Entry.Input))
+	defer gg.Detailf(`failed to backup %v`, fmtPath(state.Entry.Input))
 
-	inp := gg.ParseTo[IndexedName](run.Entry.Input)
-	outs := gg.Sorted(relatedNames(run.Entry.Output, inp))
+	inp := gg.ParseTo[IndexedName](state.Entry.Input)
+	outs := gg.Sorted(relatedNames(state.Entry.Output, inp))
 	prev := gg.Last(outs)
 
-	defer gg.Ok(func() { finalize(run, outs) })
+	defer gg.Ok(func() { finalize(state, outs) })
 
-	if run.Initial() && gg.IsNotZero(prev) {
+	if state.Initial() && gg.IsNotZero(prev) {
 		name := prev.String()
-		path := filepath.Join(run.Entry.Output, name)
-		nextTime := maxModTime(run.Entry.Input)
+		path := filepath.Join(state.Entry.Output, name)
+		nextTime := maxModTime(state.Entry.Input)
 		prevTime := maxModTime(path)
 		if prevTime.After(nextTime) {
 			if FLAGS.Verbose {
-				log.Printf(`already up to date: %v`, fmtPath(path))
+				log.Printf(`up to date: %v`, fmtPath(path))
 			}
 			return
 		}
@@ -279,8 +291,8 @@ func backup(run *RunState) {
 	next := gg.Or(prev, inp)
 	next.Index = gg.Inc(next.Index) // Panics in case of overflow.
 
-	path := filepath.Join(run.Entry.Output, next.String())
-	copyRecursive(run.Entry.Input, path, run.Entry.Output)
+	path := filepath.Join(state.Entry.Output, next.String())
+	copyRecursive(state.Entry.Input, path, state.Entry.Output)
 
 	// For `finalize`.
 	outs = append(outs, next)
@@ -290,16 +302,16 @@ func backup(run *RunState) {
 	}
 }
 
-func finalize(run *RunState, outs []IndexedName) {
-	run.Latest = time.Now()
+func finalize(state *RunState, outs []IndexedName) {
+	state.Latest = time.Now()
 
-	limit := gg.NumConv[int](run.GetLimit())
+	limit := gg.NumConv[int](state.GetLimit())
 	if limit <= 0 {
 		return
 	}
 
 	for _, out := range gg.Take(outs, len(outs)-limit) {
-		path := filepath.Join(run.Entry.Output, out.String())
+		path := filepath.Join(state.Entry.Output, out.String())
 		_ = os.RemoveAll(path)
 
 		if FLAGS.Verbose {

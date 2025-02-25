@@ -1,11 +1,12 @@
 MAKEFLAGS := --silent --always-make
-MAKE_PAR := $(MAKE) -j 128
-VERB := $(if $(filter $(verb),true),-v,)
-CLEAR := $(if $(filter $(clear),false),,-c)
+MAKE_CONC := $(MAKE) -j 128
+VERB := $(if $(filter true,$(verb)),-v,)
+CLEAR := $(if $(filter false,$(clear)),,$(if $(filter 0,$(MAKELEVEL)),-c,))
 GO_SRC := .
-GO_RUN_ARGS := $(GO_SRC) $(VERB) $(run)
-GO_TEST_FAIL := $(if $(filter $(fail),false),,-failfast)
-GO_TEST_SHORT := $(if $(filter $(short),true),-short,)
+GO_FLAGS := -mod=mod
+GO_RUN_ARGS := $(GO_FLAGS) $(GO_SRC) $(run)
+GO_TEST_FAIL := $(if $(filter false,$(fail)),,-failfast)
+GO_TEST_SHORT := $(if $(filter true,$(short)),-short,)
 GO_TEST_ARGS := $(GO_SRC) -count=1 $(VERB) $(GO_TEST_FAIL) $(GO_TEST_SHORT) -run="$(run)"
 TMP_DIR := .tmp
 
@@ -32,18 +33,20 @@ ifeq ($(verb),true)
 	OK = echo [$@] ok
 endif
 
-run.w:
-	$(GO_WATCH) run $(GO_RUN_ARGS)
-
-run:
-	go run $(GO_RUN_ARGS)
-
 test.w:
 	$(GO_WATCH) test $(GO_TEST_ARGS)
 
 test:
 	go test $(GO_TEST_ARGS)
 	$(OK)
+
+# Used for local testing.
+run.w:
+	$(GO_WATCH) run $(GO_RUN_ARGS) $(VERB)
+
+# Used for local testing.
+run:
+	go run $(GO_RUN_ARGS) $(VERB)
 
 lint.w:
 	$(GO_WATCH) -- $(MAKE) lint
@@ -61,3 +64,6 @@ vet:
 
 clean:
 	$(call RM_DIR,$(TMP_DIR))
+
+install:
+	go install $(GO_FLAGS) $(GO_SRC)

@@ -33,7 +33,7 @@ The tool _requires_ a JSON config file where you specify inputs and outputs. By 
 
 To see all available settings, read the type `Config` in [backup.go](backup.go). Some settings may be provided both at the top level and in individual entries. The entry overrides take priority.
 
-Example config. Note that file paths may be either absolute or relative to the directory whence you run the tool. When writing Windows paths, use double backslashes `\\` as separators. The listed values for `debounce`, `deadline`, `throttle` and `limit` are the defaults, and should be omitted unless you want to change them.
+Example config. When writing Windows paths, use double backslashes `\\` as separators. The listed values for `debounce`, `deadline`, `throttle` and `limit` are the defaults, and should be omitted unless you want to change them. Note that file paths may be either absolute, or relative to the directory whence you run the tool.
 
 ```json
 {
